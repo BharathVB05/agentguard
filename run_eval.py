@@ -9,12 +9,18 @@ from collections import defaultdict
 
 from attacks import SCENARIOS
 from guard import Guard
+import sys
 
 
 def main():
+    judge = None
+    if '--intent' in sys.argv:
+        from intent_check import llm_judge
+        judge = llm_judge
+        print('Intent check ON (uses Ollama, this is slower)')
     rows = []
     for s in SCENARIOS:
-        g = Guard(":memory:")  # fresh state per scenario
+        g = Guard(":memory:", intent_judge=judge)  # fresh state per scenario
         for text in s["untrusted"]:
             g.register_untrusted(text)
         t0 = time.perf_counter()

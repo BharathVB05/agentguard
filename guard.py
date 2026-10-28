@@ -5,6 +5,8 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
+from injection_clf import InjectionClassifier
+
 SENSITIVE_TOOLS = {"send_email", "query_db"}
 ALLOWED_EMAIL_DOMAIN = "company.com"
 FORBIDDEN_SQL = ["drop", "delete", "update", "insert"]
@@ -19,8 +21,11 @@ class Decision:
 
 
 class Guard:
-    def __init__(self, db_path: str = "audit.db"):
+    def __init__(self, db_path: str = "audit.db", intent_judge=None):
+        # intent_judge: function(task, tool, args) -> bool. None = intent check off.
+        self.intent_judge = intent_judge
         self.untrusted_texts: list[str] = []
+        self.clf = InjectionClassifier()
         self.conn = sqlite3.connect(db_path)
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS audit (
@@ -67,14 +72,26 @@ class Guard:
         if policy_decision:
             decision = policy_decision
         elif tool in SENSITIVE_TOOLS:
-            tainted = self._tainted_values(args)
-            if tainted:
+            # 1) injected-instruction text: block outright (never overridden by the judge)
+            flagged = [t for t in self.untrusted_texts if self.clf.is_injection(t)]
+            if flagged:
                 decision = Decision(
-                    False,
-                    f"Sensitive call influenced by untrusted content: {tainted}",
-                    "taint",
+                    False, "Untrusted content looks like an injected instruction", "classifier"
                 )
-            # TODO (Week 4): injection classifier + LLM intent check go here
+            else:
+                # 2) taint: untrusted data shaped the arguments -> ask the intent check
+                tainted = self._tainted_values(args)
+                if tainted:
+                    if self.intent_judge and self.intent_judge(task, tool, args):
+                        decision = Decision(
+                            True, f"Tainted values {tainted} but consistent with user task", "intent"
+                        )
+                    else:
+                        decision = Decision(
+                            False,
+                            f"Sensitive call influenced by untrusted content: {tainted}",
+                            "taint",
+                        )
 
         latency = (time.perf_counter() - start) * 1000
         self._log(task, tool, args, decision, latency)
