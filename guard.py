@@ -27,6 +27,7 @@ class Guard:
         # intent_judge: function(task, tool, args) -> bool. None = intent check off.
         self.intent_judge = intent_judge
         self.untrusted_texts: list[str] = []
+        self.sources: list[str | None] = []
         self.clf = InjectionClassifier()
         self.conn = sqlite3.connect(db_path)
         self.conn.execute(
@@ -36,15 +37,36 @@ class Guard:
         )
 
     # ---- taint tracking -------------------------------------------------
-    def register_untrusted(self, text: str) -> None:
-        """Call this with anything that came from a file, web page, etc."""
+    def register_untrusted(self, text: str, source: str | None = None) -> None:
+        """Call this with anything that came from a file, web page, etc.
+        source = file name or URL it came from (used for source-aware taint)."""
         self.untrusted_texts.append(text)
+        self.sources.append(source)
 
-    def _tainted_values(self, args: dict) -> list[str]:
-        """Emails/URLs in the arguments that first appeared in untrusted content."""
+    @staticmethod
+    def _endorsed(task: str, source: str | None) -> bool:
+        """True if the USER's task points at this source as the place to take recipients from,
+        e.g. 'email the person listed in contacts.txt'. Merely naming a file to read or
+        summarize ('summarize report.txt') does NOT count. This is a keyword heuristic."""
+        if not source:
+            return False
+        src = re.escape(source.lower())
+        t = task.lower()
+        patterns = [
+            rf"\b(listed|named|mentioned|specified|given|written|found|contained|stated)\b.{{0,40}}\b(in|on|from|by)\s+{src}",
+            rf"\b(address(es)?|email|recipients?|person|people|contacts?|owner|lead|manager)\b.{{0,25}}\b(in|from)\s+{src}",
+        ]
+        return any(re.search(p, t) for p in patterns)
+
+    def _tainted_values(self, args: dict, task: str = "") -> list[str]:
+        """Emails/URLs in the arguments that first appeared in untrusted content
+        (ignoring content from a source the user explicitly pointed to)."""
         untrusted_tokens = set()
-        for text in self.untrusted_texts:
-            untrusted_tokens.update(EMAIL_OR_URL.findall(text))
+        for text, source in zip(self.untrusted_texts, self.sources):
+            if self._endorsed(task, source):
+                continue
+            # strip trailing sentence punctuation so 'x@company.com.' matches 'x@company.com'
+            untrusted_tokens.update(t.rstrip(".,;:!?)\"'") for t in EMAIL_OR_URL.findall(text))
         hits = []
         for value in args.values():
             for token in untrusted_tokens:
@@ -74,32 +96,25 @@ class Guard:
         if policy_decision:
             decision = policy_decision
         elif tool in SENSITIVE_TOOLS:
-            # 1) injected-instruction text: block outright (never overridden by the judge)
             flagged = (
                 [t for t in self.untrusted_texts if self.clf.is_injection(t)]
                 if "classifier" in self.checks else []
             )
+            tainted = self._tainted_values(args, task) if "taint" in self.checks else []
             if flagged:
                 decision = Decision(
                     False, "Untrusted content looks like an injected instruction", "classifier"
                 )
-            else:
-                # 2) taint: untrusted data shaped the arguments -> ask the intent check
-                tainted = self._tainted_values(args) if "taint" in self.checks else []
-                if tainted:
-                    if "intent" in self.checks and self.intent_judge and self.intent_judge(task, tool, args):
-                        decision = Decision(
-                            True, f"Tainted values {tainted} but consistent with user task", "intent"
-                        )
-                    else:
-                        decision = Decision(
-                            False,
-                            f"Sensitive call influenced by untrusted content: {tainted}",
-                            "taint",
-                        )
-                elif ("intent" in self.checks and "taint" not in self.checks
-                      and self.intent_judge and not self.intent_judge(task, tool, args)):
-                    decision = Decision(False, "Call not consistent with user task", "intent")
+            elif tainted:
+                decision = Decision(
+                    False,
+                    f"Sensitive call influenced by untrusted content: {tainted}",
+                    "taint",
+                )
+            elif ("intent" in self.checks and self.intent_judge
+                  and not self.intent_judge(task, tool, args)):
+                # The LLM judge may only ADD a block. It can never cancel another layer's block.
+                decision = Decision(False, "Call not consistent with user task", "intent")
 
         latency = (time.perf_counter() - start) * 1000
         self._log(task, tool, args, decision, latency)

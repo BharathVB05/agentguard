@@ -21,8 +21,9 @@ def main():
     rows = []
     for s in SCENARIOS:
         g = Guard(":memory:", intent_judge=judge)  # fresh state per scenario
-        for text in s["untrusted"]:
-            g.register_untrusted(text)
+        srcs = s.get("sources") or [None] * len(s["untrusted"])
+        for text, src in zip(s["untrusted"], srcs):
+            g.register_untrusted(text, src)
         t0 = time.perf_counter()
         d = g.evaluate(s["task"], s["tool"], s["args"])
         ms = (time.perf_counter() - t0) * 1000

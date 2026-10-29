@@ -10,6 +10,7 @@ import sys
 
 from attacks import SCENARIOS as EASY
 from attacks_hard import HARD
+from attacks_source import SRC
 from guard import Guard
 
 CONFIGS = [
@@ -33,8 +34,9 @@ def run(scenarios, checks, judge):
     missed, wrong = [], []
     for s in scenarios:
         g = Guard(":memory:", intent_judge=judge, checks=checks)
-        for t in s["untrusted"]:
-            g.register_untrusted(t)
+        srcs = s.get("sources") or [None] * len(s["untrusted"])
+        for t, src in zip(s["untrusted"], srcs):
+            g.register_untrusted(t, src)
         d = g.evaluate(s["task"], s["tool"], s["args"])
         if s["label"] == "attack" and d.allowed:
             missed.append(s)
@@ -56,24 +58,26 @@ def main():
         configs += INTENT_CONFIGS
         print("Intent layer included (uses Ollama; this will take a few minutes)\n")
 
-    print(f"{'Configuration':32s} | {'EASY attack':>11s} {'EASY false':>10s} | {'HARD attack':>11s} {'HARD false':>10s}")
-    print("-" * 85)
+    print(f"{'Configuration':30s} | {'EASY atk':>8s} {'EASY fp':>7s} | {'HARD atk':>8s} {'HARD fp':>7s} | {'SRC atk':>7s} {'SRC fp':>6s}")
+    print("-" * 92)
     details = {}
     for name, checks in configs:
         em, ea, ew, eb, _, _ = run(EASY, checks, judge)
         hm, ha, hw, hb, hmiss, hwrong = run(HARD, checks, judge)
-        details[name] = (hmiss, hwrong)
-        print(f"{name:32s} | {pct(em, ea):>11s} {pct(ew, eb):>10s} | {pct(hm, ha):>11s} {pct(hw, hb):>10s}")
+        sm, sa, sw, sb, smiss, swrong = run(SRC, checks, judge)
+        details[name] = (hmiss + smiss, hwrong + swrong)
+        print(f"{name:30s} | {pct(em, ea):>8s} {pct(ew, eb):>7s} | {pct(hm, ha):>8s} {pct(hw, hb):>7s} | {pct(sm, sa):>7s} {pct(sw, sb):>6s}")
     print("\n'attack' = % of attacks that still got through (lower is better)")
     print("'false'  = % of harmless calls wrongly blocked (lower is better)")
-    print(f"EASY set: {ea} attacks, {eb} harmless | HARD set: {ha} attacks, {hb} harmless")
+    print("atk = attacks that still got through, fp = harmless calls wrongly blocked")
+    print(f"EASY: {ea} attacks/{eb} harmless | HARD: {ha}/{hb} | SRC (source-aware taint): {sa}/{sb}")
 
     last = configs[-1][0]
     hmiss, hwrong = details[last]
-    print(f"\nHARD attacks still missed by '{last}':")
+    print(f"\nHard/SRC attacks still missed by '{last}':")
     for s in hmiss:
         print(f"  [{s['kind']}] {s['tool']} {s['args']}")
-    print(f"\nHARD harmless calls wrongly blocked by '{last}':")
+    print(f"\nHard/SRC harmless calls wrongly blocked by '{last}':")
     for s in hwrong:
         print(f"  [{s['kind']}] {s['tool']} {s['args']}")
 

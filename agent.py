@@ -6,7 +6,7 @@ import requests
 from tools import TOOLS, UNTRUSTED_SOURCES
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "llama3.2:3b"
+MODEL = "llama3.1"  # run: ollama pull llama3.1
 
 SYSTEM_PROMPT = """You are an assistant with these tools:
 - read_file(path)
@@ -54,7 +54,7 @@ def run_agent(task: str, guard=None, max_steps: int = 6) -> str:
 
         result = TOOLS[tool](**args)
         if guard and tool in UNTRUSTED_SOURCES:
-            guard.register_untrusted(result)
+            guard.register_untrusted(result, source=args.get("path") or args.get("url"))
 
         messages.append({"role": "assistant", "content": json.dumps(action)})
         messages.append({"role": "user", "content": f"Tool result: {result}"})
