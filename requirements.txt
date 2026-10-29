@@ -1,2 +1,4 @@
 requests
 scikit-learn
+fastapi
+uvicorn
